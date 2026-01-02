@@ -128,7 +128,7 @@ bool position_mode_active = false; // For position mode: true when actively main
 // Motor configuration
 int steps_per_rotation = 200;
 float distance_per_step_mm = 0.0; // Distance per step in mm (calculated from distance_per_revolution)
-float distance_per_revolution_mm = 200.0; // Total distance per full rotation (default: 200mm per revolution)
+float distance_per_revolution_mm = 40.0; // Total distance per full rotation (default: 40mm for 20T GT2 pulley)
 float acceleration_mm_s2 = 100.0; // Acceleration in mm/s²
 
 // Position control timing
@@ -712,15 +712,49 @@ void handleMoveControl() {
     return;
   }
 
-  // Calculate step delay based on velocity
-  unsigned long step_delay_us = getStepDelay(position_velocity_mm_s);
+  // Calculate distance error in mm for velocity ramping
+  float distance_error_mm = target_position_mm - current_position_mm;
+  float abs_distance_error = abs(distance_error_mm);
+
+  // Define zones for velocity ramping to prevent overshoot
+  const float settling_zone_mm = 1.0;  // Within 1mm, use slow velocity
+  const float deceleration_zone_mm = 5.0;  // Within 5mm, start decelerating
+  const float min_velocity_mm_s = 2.0;  // Minimum velocity near target
+  const float max_velocity_mm_s = position_velocity_mm_s;  // Maximum velocity (user set)
+
+  // Calculate effective velocity based on distance to target (velocity ramping)
+  float effective_velocity = max_velocity_mm_s;
+  
+  if (abs_distance_error < settling_zone_mm) {
+    // Very close to target - use minimum velocity
+    effective_velocity = min_velocity_mm_s;
+  } else if (abs_distance_error < deceleration_zone_mm) {
+    // In deceleration zone - ramp down velocity linearly
+    float ramp_factor = (abs_distance_error - settling_zone_mm) / (deceleration_zone_mm - settling_zone_mm);
+    effective_velocity = min_velocity_mm_s + (max_velocity_mm_s - min_velocity_mm_s) * ramp_factor;
+  }
+
+  // Calculate step delay based on effective velocity
+  unsigned long step_delay_us = getStepDelay(effective_velocity);
   
   if (step_delay_us == 0) {
     step_delay_us = 1000; // Default minimum delay
   }
 
+  // Calculate deadband - use one microstep for positioning
+  // One microstep in CurrentPosition units = 256 / microsteps
+  // This provides fine positioning while preventing excessive vibration
+  signed long deadband = 256 / microsteps.toInt(); // 1 microstep deadband
+  if (deadband < 1) deadband = 1; // Ensure minimum of 1
+
   // Move towards setpoint
-  if (setPoint > CurrentPosition) {
+  signed long position_error = setPoint - CurrentPosition;
+  
+  if (abs(position_error) <= deadband) {
+    // Reached target - stop moving
+    position_moving = false;
+    stepper_driver.moveAtVelocity(0);
+  } else if (setPoint > CurrentPosition) {
     // Need to move in positive direction (increase position)
     if (micros() - lastStep > step_delay_us) {
       digitalWrite(DIR, motor_direction == "cw" ? HIGH : LOW);
@@ -738,10 +772,6 @@ void handleMoveControl() {
       CurrentPosition -= (256 / microsteps.toInt());
       lastStep = micros();
     }
-  } else {
-    // Reached target - stop moving
-    position_moving = false;
-    stepper_driver.moveAtVelocity(0);
   }
 }
 
@@ -767,16 +797,43 @@ void handlePositionControl() {
     setPoint = CurrentPosition + microsteps_to_move;
   }
 
-  // Calculate step delay based on velocity
-  unsigned long step_delay_us = getStepDelay(position_velocity_mm_s);
+  // Calculate distance error in mm for velocity ramping
+  float distance_error_mm = target_position_mm - current_position_mm;
+  float abs_distance_error = abs(distance_error_mm);
+
+  // Define zones for velocity ramping
+  const float settling_zone_mm = 2.0;  // Within 2mm, use slow velocity
+  const float deceleration_zone_mm = 10.0;  // Within 10mm, start decelerating
+  const float min_velocity_mm_s = 2.0;  // Minimum velocity near target
+  const float max_velocity_mm_s = position_velocity_mm_s;  // Maximum velocity (user set)
+
+  // Calculate effective velocity based on distance to target (velocity ramping)
+  float effective_velocity = max_velocity_mm_s;
+  
+  if (abs_distance_error < settling_zone_mm) {
+    // Very close to target - use minimum velocity
+    effective_velocity = min_velocity_mm_s;
+  } else if (abs_distance_error < deceleration_zone_mm) {
+    // In deceleration zone - ramp down velocity linearly
+    float ramp_factor = (abs_distance_error - settling_zone_mm) / (deceleration_zone_mm - settling_zone_mm);
+    effective_velocity = min_velocity_mm_s + (max_velocity_mm_s - min_velocity_mm_s) * ramp_factor;
+  }
+
+  // Calculate step delay based on effective velocity
+  unsigned long step_delay_us = getStepDelay(effective_velocity);
   
   if (step_delay_us == 0) {
     step_delay_us = 1000; // Default minimum delay
   }
 
-  // Check if we need to move (with small deadband to prevent jitter)
+  // Calculate deadband - use one microstep for positioning
+  // One microstep in CurrentPosition units = 256 / microsteps
+  // This provides fine positioning while preventing excessive vibration
+  signed long deadband = 256 / microsteps.toInt(); // 1 microstep deadband
+  if (deadband < 1) deadband = 1; // Ensure minimum of 1
+
+  // Check if we need to move
   signed long position_error = setPoint - CurrentPosition;
-  const signed long deadband = 256 / microsteps.toInt(); // 1 microstep deadband
 
   if (abs(position_error) > deadband) {
     // Need to correct position
@@ -800,7 +857,7 @@ void handlePositionControl() {
       }
     }
   } else {
-    // Within deadband - position is maintained
+    // Within deadband - position is maintained, stop motor
     stepper_driver.moveAtVelocity(0);
   }
 }
@@ -963,13 +1020,13 @@ void readSettings() {
   preferences.begin("settings", false);
   steps_per_rotation = preferences.getInt("steps_per_rotation", 200);
   distance_per_step_mm = preferences.getFloat("distance_per_step", 0.0);
-  distance_per_revolution_mm = preferences.getFloat("distance_per_revolution", 200.0); // Default: 200mm per revolution
+  distance_per_revolution_mm = preferences.getFloat("distance_per_revolution", 40.0); // Default: 40mm for 20T GT2 pulley
   acceleration_mm_s2 = preferences.getFloat("acceleration", 100.0);
   
   // Set defaults if not configured
   if (distance_per_step_mm <= 0 && distance_per_revolution_mm <= 0) {
-    // Default: 200mm per revolution
-    distance_per_revolution_mm = 200.0;
+    // Default: 40mm per revolution (20T GT2 pulley: 20 teeth × 2mm pitch = 40mm)
+    distance_per_revolution_mm = 40.0;
     if (steps_per_rotation > 0 && microsteps.toInt() > 0) {
       distance_per_step_mm = distance_per_revolution_mm / (steps_per_rotation * microsteps.toInt());
     }
@@ -1031,9 +1088,52 @@ void handleSerialCommands() {
       delay(1000);
       ESP.restart();
     }
+    else if (cmd.startsWith("broker=") || cmd.startsWith("mqtt=")) {
+      // Change MQTT broker: broker=192.168.1.100 or mqtt=192.168.1.100:1883
+      int equals_pos = cmd.indexOf('=');
+      if (equals_pos > 0) {
+        String broker_str = cmd.substring(equals_pos + 1);
+        broker_str.trim();
+        
+        // Check if port is included (format: broker:port)
+        int colon_pos = broker_str.indexOf(':');
+        if (colon_pos > 0) {
+          mqtt_server = broker_str.substring(0, colon_pos);
+          String port_str = broker_str.substring(colon_pos + 1);
+          mqtt_port = port_str.toInt();
+          if (mqtt_port <= 0) mqtt_port = 1883;
+        } else {
+          mqtt_server = broker_str;
+        }
+        
+        // Save to preferences
+        preferences.begin("settings", false);
+        preferences.putString("mqtt_server", mqtt_server);
+        preferences.putInt("mqtt_port", mqtt_port);
+        preferences.end();
+        
+        Serial.print("MQTT broker updated to: ");
+        Serial.print(mqtt_server);
+        Serial.print(":");
+        Serial.println(mqtt_port);
+        
+        // Reconnect to new broker
+        if (WiFi.status() == WL_CONNECTED) {
+          Serial.println("Reconnecting to new MQTT broker...");
+          mqtt_client.disconnect();
+          delay(100);
+          setupMQTT();
+        } else {
+          Serial.println("WiFi not connected. Broker will be used after WiFi reconnects.");
+        }
+      }
+    }
     else if (cmd == "help" || cmd == "?") {
       Serial.println("\n=== PD Stepper MQTT Serial Commands ===");
       Serial.println("reset          - Reset WiFi and MQTT settings (returns to setup mode)");
+      Serial.println("broker=IP      - Change MQTT broker (e.g., broker=192.168.1.100)");
+      Serial.println("broker=IP:PORT - Change MQTT broker with port (e.g., broker=192.168.1.100:1883)");
+      Serial.println("mqtt=IP        - Same as broker= (alternative syntax)");
       Serial.println("help or ?      - Show this help message");
       Serial.println("");
     }

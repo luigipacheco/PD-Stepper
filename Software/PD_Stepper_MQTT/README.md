@@ -78,7 +78,7 @@ Install these libraries in the Arduino IDE:
 | `motor/rpm` | Float/Integer | `"100"`<br>`"50.5"`<br>`"-30"` | Motor speed in RPM (only used in velocity mode) |
 | `motor/direction` | String | `"cw"`<br>`"ccw"` | Motor direction: clockwise or counter-clockwise |
 | `motor/home` | Boolean/String | `"true"`<br>`"1"`<br>`"false"` | Set current position as home (true/1 sets home, auto-resets to false) |
-| `motor/conf` | JSON String | `{"steps_per_rotation":200,"distance_per_revolution":50.0}`<br>`{"steps_per_rotation":200,"distance_per_step":0.1,"acceleration":100.0}` | Motor configuration in JSON format |
+| `motor/conf` | JSON String | `{"steps_per_rotation":200,"distance_per_revolution":40.0}`<br>`{"steps_per_rotation":200,"distance_per_step":0.1,"acceleration":100.0}` | Motor configuration in JSON format (default: 40mm for 20T GT2 pulley) |
 | `motor/target` | String/Float/JSON | `"20"`<br>`"-10"`<br>`"20 15 mm/s"`<br>`"[100, 100]"`<br>`"[50, 25]"` | Target position in mm. JSON array format: `[target, velocity]` |
 | `motor/enable` | Boolean/String | `"true"`<br>`"false"`<br>`"1"`<br>`"0"`<br>`"enabled"`<br>`"disabled"` | Enable/disable motor driver. When disabled, motor can be manually rotated and position is still readable |
 | `motor/position` | Float (String) | `"25.50"`<br>`"-5.25"` | **Published topic** - Current position in mm from home (read-only) |
@@ -111,17 +111,19 @@ Set the current position as home (zero position).
 #### `motor/conf`
 Motor configuration in JSON format.
 - **Type**: JSON String
-- **Example**:
+- **Example** (20T GT2 pulley - default):
   ```json
   {
     "steps_per_rotation": 200,
-    "distance_per_revolution": 50.0,
+    "distance_per_revolution": 40.0,
     "acceleration": 100.0
   }
   ```
 - **Fields**:
   - `steps_per_rotation`: Number of full steps per motor revolution (typically 200 or 400)
   - `distance_per_revolution`: Distance in mm that the motor travels in one full revolution
+    - **Default: 40.0mm** (for 20T GT2 pulley: 20 teeth × 2mm pitch = 40mm)
+    - Other common GT2 pulleys: 16T = 32mm, 24T = 48mm, 32T = 64mm
   - `acceleration`: Acceleration in mm/s² (for future use)
   - `distance_per_step`: Alternative to distance_per_revolution, directly specifies distance per step
 
@@ -187,7 +189,8 @@ mosquitto_pub -h your_mqtt_broker -t motor/rpm -m "50"
 
 ```bash
 # First, configure the motor (one time setup)
-mosquitto_pub -h your_mqtt_broker -t motor/conf -m '{"steps_per_rotation":200,"distance_per_revolution":200.0}'
+# Default is 40mm per revolution (20T GT2 pulley), but you can override:
+mosquitto_pub -h your_mqtt_broker -t motor/conf -m '{"steps_per_rotation":200,"distance_per_revolution":40.0}'
 
 # Set home position
 mosquitto_pub -h your_mqtt_broker -t motor/home -m "true"
@@ -242,7 +245,10 @@ mosquitto_pub -h your_mqtt_broker -t motor/enable -m "true"
 
 ## Configuration Notes
 
-- **Distance per revolution**: This is the linear distance (in mm) that your mechanism travels when the motor completes one full rotation. For example, if you have a lead screw with 2mm pitch, this would be 2.0.
+- **Distance per revolution**: This is the linear distance (in mm) that your mechanism travels when the motor completes one full rotation. 
+  - **GT2 Belt**: For a 20T GT2 pulley (20 teeth × 2mm pitch), this would be 40.0mm
+  - **Lead Screw**: For a 2mm pitch lead screw, this would be 2.0mm
+  - **Other pulleys**: Calculate as (number of teeth) × (belt pitch)
 
 - **Steps per rotation**: Typically 200 for 1.8° stepper motors or 400 for 0.9° motors.
 
@@ -289,14 +295,24 @@ The firmware supports serial commands for debugging and configuration. Connect t
 | Command | Description |
 |---------|-------------|
 | `reset` | Reset WiFi and MQTT settings. Device will restart in setup mode (Access Point) |
+| `broker=IP` | Change MQTT broker address (e.g., `broker=192.168.1.100`) |
+| `broker=IP:PORT` | Change MQTT broker with port (e.g., `broker=192.168.1.100:1883`) |
+| `mqtt=IP` | Same as `broker=` (alternative syntax) |
 | `help` or `?` | Display available serial commands |
 
 ### Example Usage
 
+**Reset Configuration:**
 1. Open Serial Monitor in Arduino IDE (115200 baud)
 2. Type `reset` and press Enter
 3. Device will clear WiFi/MQTT settings and restart in setup mode
 4. Connect to "PD Stepper Setup" WiFi network to reconfigure
+
+**Change MQTT Broker:**
+1. Open Serial Monitor in Arduino IDE (115200 baud)
+2. Type `broker=192.168.1.100` and press Enter (replace with your broker IP)
+3. Or with port: `broker=192.168.1.100:1883`
+4. Device will save new broker and reconnect automatically (if WiFi is connected)
 
 ## Serial Debug Output
 
